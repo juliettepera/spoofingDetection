@@ -4,9 +4,9 @@
 
 namespace
 {
-const size_t NEIGHBORS = 8;
-const int R_NEIGBHORS[] = {-1, -1, -1, 0, 1, 1, 1, 0};
-const int C_NEIGBHORS[] = {-1, 0, 1, 1, 1, 0, -1, -1};
+const size_t NEIGHBORS = 8; /// LBP neighbor count
+const int R_NEIGBHORS[] = {-1, -1, -1, 0, 1, 1, 1, 0}; /// LBP neighbors row index
+const int C_NEIGBHORS[] = {-1, 0, 1, 1, 1, 0, -1, -1}; /// LBP neighbors column index
 
 /// \brief Compute and return the score of the reference pixel within the cell
 /// The score is computed by going through the 8 neighboring pixels of the reference pixel.
@@ -78,6 +78,10 @@ void scoreCell(const cv::Mat& cell, cv::Mat& scores)
 
 namespace util
 {
+/// \brief Convert the input image to one-channel gray image
+/// \param inputImage, the input image
+/// \param grayImage, the gray image with value from 0 to 255
+/// \throw if the converted image doesn't contain data
 void convertToGray(const cv::Mat& inputImage, cv::Mat& grayImage)
 {
     cv::cvtColor(inputImage, grayImage, CV_BGR2GRAY);
@@ -85,41 +89,6 @@ void convertToGray(const cv::Mat& inputImage, cv::Mat& grayImage)
     if ( !grayImage.data )
     {
         throw std::runtime_error("Failed to convert the image to gray");
-    }
-}
-
-void createHistogram(const cv::Mat& inputImage, cv::Mat& histImage)
-{
-    // Establish the number of bins
-    int histSize = 256;
-
-    // Set the ranges
-    float range[] = { 0, 256 } ;
-    const float* histRange = { range };
-
-    bool uniform = true;
-    bool accumulate = false;
-
-    cv::Mat hist;
-
-    // Compute the histograms:
-    cv::calcHist(&inputImage, 1, 0, cv::Mat(), hist, 1, &histSize, &histRange, uniform, accumulate);
-
-    // Draw the histograms for B, G and R
-    int hist_w = 512; int hist_h = 400;
-    int bin_w = cvRound( (double) hist_w/histSize );
-
-    histImage = cv::Mat( hist_h, hist_w, CV_8UC3, cv::Scalar(0,0,0));
-
-    // Normalize the result to [ 0, histImage.rows ]
-    cv::normalize(hist, hist, 0, histImage.rows, cv::NORM_MINMAX, -1, cv::Mat() );
-
-    // Draw
-    for( int i = 1; i < histSize; i++ )
-    {
-        cv::line( histImage, cv::Point( bin_w*(i-1), hist_h - cvRound(hist.at<float>(i-1)) ) ,
-                  cv::Point( bin_w*(i), hist_h - cvRound(hist.at<float>(i)) ),
-                  cv::Scalar( 255, 0, 0), 2, 8, 0  );
     }
 }
 
@@ -146,6 +115,9 @@ void thresholdImage(const cv::Mat& inputImage, const size_t threshValue, cv::Mat
     }
 }
 
+/// \brief Compute gradient on the X direction of the inputImage using the Sobel operator
+/// \param inputImage, the input image to compute the gradient from
+/// \param gradImage, the output image containing the gradient
 void extractGradientX(const cv::Mat& inputImage, cv::Mat& gradImage)
 {
     cv::Mat sobelx;
@@ -155,6 +127,9 @@ void extractGradientX(const cv::Mat& inputImage, cv::Mat& gradImage)
     sobelx.convertTo(gradImage, CV_8U, 255.0/(maxVal - minVal), -minVal * 255.0/(maxVal - minVal));
 }
 
+/// \brief Compute gradient on the Y direction of the inputImage using the Sobel operator
+/// \param inputImage, the input image to compute the gradient from
+/// \param gradImage, the output image containing the gradient
 void extractGradientY(const cv::Mat& inputImage, cv::Mat& gradImage)
 {
     cv::Mat sobely;
@@ -162,6 +137,47 @@ void extractGradientY(const cv::Mat& inputImage, cv::Mat& gradImage)
     double minVal, maxVal;
     cv::minMaxLoc(sobely, &minVal, &maxVal); //find minimum and maximum intensities
     sobely.convertTo(gradImage, CV_8U, 255.0/(maxVal - minVal), -minVal * 255.0/(maxVal - minVal));
+}
+
+/// \brief maskImage
+/// \param inputImage
+/// \param mask
+/// \param roiImage
+void maskImage(const cv::Mat& inputImage, const cv::Mat& mask, cv::Mat& roiImage)
+{
+    roiImage = cv::Mat(inputImage.rows, inputImage.cols, CV_8U, cv::Scalar(0));
+
+    for(int r = 0; r < inputImage.rows ; ++r)
+    {
+        for(int c = 0; c < inputImage.cols ; ++c)
+        {
+            const size_t val = mask.at<uchar>(r,c);
+            if (val < 255)
+            {
+                roiImage.at<uchar>(r,c) = inputImage.at<uchar>(r,c);
+            }
+        }
+    }
+}
+
+/// \brief Compute the histogram of the matrix, the bin count is fixed to 26 and the bin width to 10
+/// \param image, the image to compute the histogram from
+/// \param histogram, the vector containing the bin's values
+void computeHistogram(const cv::Mat& image, std::vector<float>& histogram)
+{
+    histogram.resize(26,0);
+
+    size_t count= 0;
+    for(size_t r = 0; r < image.rows; ++r)
+    {
+        for(size_t c = 0; c < image.cols; ++c)
+        {
+            const size_t value = static_cast<size_t>(image.at<uchar>(r,c)) / 10;
+
+            histogram[value] += 1.0;
+            ++count;
+        }
+    }
 }
 
 /// \brief Run the LBP (local binary pattern) algorithm on the inputImage
@@ -181,6 +197,8 @@ void runLBPOnImage(const cv::Mat& inputImage, const int cellSize, cv::Mat& lbpIm
     // Initialize the output image
     lbpImage = cv::Mat(rowSize, colSize, CV_8U, cv::Scalar(0));
 
+    std::vector<float> cumulatedHistogram(26,0);
+
     // For each cells in the image, compute the score of the cell and
     // add the results to the lbp output matrix
     for(int cR = 0; cR < cellCountR; ++cR)
@@ -198,7 +216,24 @@ void runLBPOnImage(const cv::Mat& inputImage, const int cellSize, cv::Mat& lbpIm
             // Add the cell score to the LBP matrix
             cv::Mat aux = lbpImage.rowRange(cR*cellSize, (cR+1)*cellSize).colRange(cC*cellSize, (cC+1)*cellSize);
             scores.copyTo(aux);
+
+            // Compute the cell's histogram
+            std::vector<float> histogram;
+            computeHistogram(scores, histogram);
+
+            // update the cumulated histogram
+            for(int i = 0; i < cumulatedHistogram.size(); ++i)
+            {
+                cumulatedHistogram[i] += histogram[i];
+            }
+
         }
+    }
+
+    std::cout <<"HISTOGRAM : ";
+    for(int i = 0; i < cumulatedHistogram.size(); ++i)
+    {
+        std::cout << cumulatedHistogram[i] << ", ";
     }
 }
 }
